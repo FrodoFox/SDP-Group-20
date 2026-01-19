@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import math
+import time   # ADDED
 
 def track_patterned_golf_balls():
     # Constants Required for scaling of goolf balls to detemine z coordiante
@@ -129,6 +130,9 @@ def track_patterned_golf_balls():
             if tracked_ball is not None:
                 px_x, px_y, radius, r, theta, z = tracked_ball
 
+                # Return a tuple of r, theta, z
+                results = (r, theta, z)
+
                 cv2.circle(
                     frame,
                     (int(px_x), int(px_y)),
@@ -161,8 +165,9 @@ def track_patterned_golf_balls():
         cap.release()
         cv2.destroyAllWindows()
 
-    return []
+    return results
 
 
 if __name__ == "__main__":
-    track_patterned_golf_balls()
+    data = track_patterned_golf_balls()
+    print(data)
