@@ -1,6 +1,5 @@
 # Ignoring ssh script as it contains tokens
-ssh_run.expect
-*.expect
+freddy.expect
 
 # OS Junk
 .DS_Store

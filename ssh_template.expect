@@ -1,0 +1,73 @@
+#!/usr/bin/expect -f
+
+# --- CONFIG ---
+set timeout 300
+set user "pi"
+set host "metapod"
+set password "r00t"
+set target_dir "/home/pi/SDP-Group-20"
+
+# GITHUB CONFIG (Required for the local push)
+set git_user "git user"
+set git_token "git token"
+
+# Regex pattern for prompts
+set prompt_pattern {.*[\$#]\s$}
+
+# 1. --- LOCAL GIT PHASE ---
+puts "\n>>> Phase 1: Git Push..."
+spawn git add .
+expect eof
+spawn git commit -m "Automated update before transfer"
+expect eof
+spawn git push
+expect {
+    "Username for 'https://github.com':" { send "$git_user\r"; exp_continue }
+    "Password for 'https://*':" { send "$git_token\r"; exp_continue }
+    eof
+}
+
+# 2. --- TRANSFER PHASE ---
+puts "\n>>> Phase 2: Deploying to $host..."
+spawn ssh $user@$host "mkdir -p $target_dir"
+expect "password:" { send "$password\r" }
+expect eof
+
+spawn rsync -avz \
+    --exclude=.git/ \
+    --exclude=.gitignore \
+    --exclude=*.expect \
+    --exclude=*.md \
+    ./ \
+    $user@$host:$target_dir
+expect {
+    "password:" {
+        send "$password\r"
+    }
+}
+expect eof
+
+# 3. --- LOGIN PHASE ---
+puts "\n>>> Phase 3: Logging in (Handover)..."
+spawn ssh -t $user@$host "export TERM=dumb; bash -i"
+
+expect {
+    "password:" {
+        send "$password\r"
+        exp_continue
+    }
+    -re {\$ } {
+        # We found the dollar sign and space!
+        puts "\n>>> Prompt detected."
+    }
+    timeout {
+        puts "\n>>> ERROR: Could not find prompt after login."
+        exit 1
+    }
+}
+
+# Navigate
+send "cd $target_dir\r"
+expect -re {\$ }
+
+interact

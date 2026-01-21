@@ -4,7 +4,7 @@ from grove.grove_i2c_motor_driver import MotorDriver
 motor = MotorDriver()
 
 motor.set_dir(True)
-motor.set_speed(100)
+motor.set_speed(255)
 
 print("Motor spinning continuously. Ctrl+C to stop.")
 
