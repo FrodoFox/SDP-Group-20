@@ -1,0 +1,32 @@
+#!/usr/bin/expect -f
+
+set timeout 20
+
+# CONFIG
+set user "pi"
+set host "metapod"
+set password "r00t"
+
+spawn ssh -XC $user@$host
+
+expect {
+    "yes/no" {
+        send "yes\r"
+        exp_continue
+    }
+    "password:" {
+        send "$password\r"
+    }
+}
+
+# Run commands
+expect "$ "
+send "whoami\r"
+expect "$ "
+send "uptime\r"
+expect "$ "
+send "df -h\r"
+
+# Exit
+send "exit\r"
+expect eof
