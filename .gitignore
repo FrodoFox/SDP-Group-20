@@ -1,0 +1,19 @@
+# Ignoring ssh script as it contains tokens
+ssh_run.expect
+*.expect
+
+# OS Junk
+.DS_Store
+Thumbs.db
+*.swp
+
+# Environemnt Files
+.vscode/
+.idea/
+.env
+*.log
+
+# C/C++ Junk
+*.o
+*.out
+build/
