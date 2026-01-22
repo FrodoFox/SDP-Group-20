@@ -7,14 +7,13 @@ from picamera2 import Picamera2
 
 class GolfBallTracker:
     def __init__(self):
-        
         # CONSTANTS NEEDED FOR SCALING THE BALL AND DISTANCE CALCULATIONS
         self.BALL_DIAM_MM = 42.67        # As googled (42.87mm)
         self.FOCAL_LENGTH = 1357         # Focal length for the resolution used (1640x1232) in pixels
 
         # CAMERA CONFIGURATION
         self.picam2 = Picamera2()
-        config = self.picam2.create_video_configuration(main={"format": "BGR888", "size": (1640, 1232)})    # using 1640x1232 for a balance of resolution and memory usage
+        config = self.picam2.create_video_configuration(main={"format": "YUV420", "size": (1640, 1232)})    # Using YUV420 format because the Y channel is essentially Grayscale/Lightness.
         self.picam2.configure(config)
         self.picam2.start()
 
@@ -26,9 +25,10 @@ class GolfBallTracker:
     # FUNCTION TO THREAD THE FETCHING OF CAMERA FRAMES
     def camera_stream(self):
         while self.running:
-            img = self.picam2.capture_array()   # Capturing the frame from the camera
+            raw_data = self.picam2.capture_array()
+            gray_frame = raw_data[:1232, :1640]     # In YUV420, the first 'h' rows are the Y (Lightness) channel.
             with self.lock:
-                self.frame = img
+                self.frame = gray_frame
             time.sleep(0.01)
 
     def track_patterned_golf_balls(self):
@@ -47,26 +47,26 @@ class GolfBallTracker:
         stream_thread = threading.Thread(target=self.camera_stream, daemon=True)
         stream_thread.start()
 
+        print("Press 'q' to stop.")
+
         try:
             while self.running:
                 with self.lock:
                     if self.frame is None:
                         continue
-                    frame = self.frame.copy()
+                    # Working on the Lightness channel directly
+                    l_channel = self.frame.copy()
 
-                h, w, _ = frame.shape   
+                h, w = l_channel.shape   
                 cx, cy = w // 2, h // 2
 
                 # LAYERS OF IMAGE PROCESSING TO ISOLATE THE BALL
                 # 1. Applying CLAHE to lightness level to normalize lighting conditions
-                lab         = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)                        # converting the lightness, a (green-red axis), b (blue-yellow axis) colour space                  
-                l, a, b     = cv2.split(lab)
-                l_norm      = clahe.apply(l)                                                # normalizing the lightness channel using CLAHE                                                
-                final_bgr   = cv2.cvtColor(cv2.merge((l_norm, a, b)), cv2.COLOR_LAB2BGR)    
+                l_norm = clahe.apply(l_channel)                                                
 
                 # 2. Blurring image slightly and looking for sudden shifts in colour
-                blurred     = cv2.medianBlur(final_bgr, 7)                                  # applying median blur to reduce noise and small details (7x7 kernel)
-                edges       = cv2.Canny(blurred, 50, 150)                                   # using Canny edge detection to find sudden changes in colour (change 50 and 150 to adjust sensitivity)
+                blurred     = cv2.medianBlur(l_norm, 7)                                     # applying median blur to reduce noise and small details (7x7 kernel)
+                edges       = cv2.Canny(blurred, 50, 150)                                   # using Canny edge detection to find sudden changes in colour
 
                 # 3. Moving a kernel over the blended image to identify circles / ellipses
                 kernel      = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
@@ -84,7 +84,6 @@ class GolfBallTracker:
                 # TESTING CONTOUR AND DETERMINING A CONFIDENCE VALUE
                 for cnt in contours:
                     area = cv2.contourArea(cnt)
-                    # COMPARES THE AREA OF THE CONTOUR SO THAT IT DOESN'T PICK UP EVERY SHAPE IN THE FRAME- DO NOT DELETE
                     if area < 400:
                         continue
 
@@ -94,14 +93,14 @@ class GolfBallTracker:
 
                     # TESTING CONTOUR SHAPE TO FIND HOW CIRCULAR IT IS
                     circularity = (4 * math.pi * area) / (perimeter ** 2)   
-                    hull = cv2.convexHull(cnt)                              # Converting the contour into a convex hull (a rubber band around the edges of the shape)
-                    solidity = area / cv2.contourArea(hull)                 # Comparing the area of the contour with the area of what would be a solid circle (to find if there are holes in it)
+                    hull = cv2.convexHull(cnt)                              # Converting the contour into a convex hull
+                    solidity = area / cv2.contourArea(hull)                 # Comparing the area of the contour with the area of what would be a solid circle
 
                     # COMPUTING A CONFIDENCE SCORE
                     if circularity > 0.6 and solidity > 0.85:
                         ((px_x, px_y), radius) = cv2.minEnclosingCircle(cnt)
 
-                        score = circularity * solidity * area               # google told me to do it this way
+                        score = circularity * solidity * area               
                         if score > best_score:
                             best_score = score
                             best_candidate = (cnt, px_x, px_y, radius)
@@ -118,12 +117,11 @@ class GolfBallTracker:
                     x_off = (px_x - cx) * (z / self.FOCAL_LENGTH)
                     y_off = (px_y - cy) * (z / self.FOCAL_LENGTH)
 
-                    # CALCULATING R AND THETA (not needed now)
+                    # CALCULATING R AND THETA
                     r = math.sqrt(x_off ** 2 + y_off ** 2)
                     theta = math.degrees(math.atan2(y_off, x_off))
 
                     # UPDATING THE TRACKED BALL 
-                    # if no ball is detected then buffer remains in current spot until MAX_MISSED_FRAMES is reached
                     if tracked_ball is None:
                         tracked_ball = (px_x, px_y, radius, r, theta, z)
                     # if a ball is detected then it smoothes the movement of the buffer
@@ -138,36 +136,30 @@ class GolfBallTracker:
                     missed_frames = 0
                 
                 # IF NO BALL IS DETECTED
-                # Simply updates the missed frame counter and checks if the number of missed frames means that no ball is being tracked
                 else:
                     missed_frames += 1
                     if missed_frames > MAX_MISSED_FRAMES:
                         tracked_ball = None
 
                 # DRAWING BALL AND ACCOMPANYING TEXT
+                display_frame = cv2.cvtColor(l_norm, cv2.COLOR_GRAY2BGR)    # (Converting L back to BGR only for the display window)
                 if tracked_ball is not None:
                     px_x, px_y, radius, r, theta, z = tracked_ball
                     results = (r, theta, z)
 
-                    cv2.circle(frame, 
-                               (int(px_x), int(px_y)), 
-                               int(radius), 
-                               (0, 255, 0), 
-                               2)
+                    cv2.circle(display_frame, (int(px_x), int(px_y)), int(radius), (0, 255, 0), 2)
+                    cv2.putText(display_frame, f"Dist: {int(z)}mm", (int(px_x), int(px_y) - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-                    cv2.putText(frame, 
-                                f"Dist: {int(z)}mm", 
-                                (int(px_x), int(px_y) - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 
-                                0.5, 
-                                (0, 255, 0),
-                                2)
-
-                # DISPLAYING THE FRAMES OF THE NORMAL CAMERA AND THE ISOLATED MASK TO SEE WHAT'S BEING TRACKED
-                cv2.imshow("Original Feed (CLAHE Normalized)", cv2.resize(frame, (800, 600)))
+                # DISPLAYING THE FRAMES OF THE NORMAL CAMERA AND THE ISOLATED MASK
+                cv2.imshow("Original Feed (CLAHE Normalized)", cv2.resize(display_frame, (800, 600)))
                 cv2.imshow("Golf Ball Isolation Mask (B&W)", cv2.resize(mask_display, (800, 600)))
 
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    self.running = False
+
         finally:
+            self.running = False
             self.picam2.stop()
             cv2.destroyAllWindows()
 
@@ -176,4 +168,4 @@ class GolfBallTracker:
 if __name__ == "__main__":
     tracker = GolfBallTracker()
     data = tracker.track_patterned_golf_balls()
-    print(f"Final Data (r, theta, z): {data}")
+    print(f"Final Data: {data}")
