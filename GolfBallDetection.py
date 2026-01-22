@@ -7,144 +7,172 @@ from picamera2 import Picamera2
 
 class GolfBallTracker:
     def __init__(self):
-        # 1. CAMERA SETTINGS
-        self.CAMERA_RES = (1640, 1232)  # Binned high-res for better SNR
-        self.PROC_WIDTH = 640           # Width for math processing (Fast!)
-        self.scale_factor = self.PROC_WIDTH / self.CAMERA_RES[0]
         
-        # 2. CALIBRATED MATH
-        # Scale focal length: 1357 is for 1640px width.
-        self.FOCAL_LENGTH = 1357 * self.scale_factor
-        self.BALL_DIAM_MM = 42.67
+        # CONSTANTS NEEDED FOR SCALING THE BALL AND DISTANCE CALCULATIONS
+        self.BALL_DIAM_MM = 42.67        # As googled (42.87mm)
+        self.FOCAL_LENGTH = 1357         # Focal length for the resolution used (1640x1232) in pixels
 
-        # 3. THREADING SHARED VARIABLES
+        # CAMERA CONFIGURATION
+        self.picam2 = Picamera2()
+        config = self.picam2.create_video_configuration(main={"format": "BGR888", "size": (1640, 1232)})    # using 1640x1232 for a balance of resolution and memory usage
+        self.picam2.configure(config)
+        self.picam2.start()
+
+        # THREADING VARIABLES
         self.frame = None
         self.running = True
         self.lock = threading.Lock()
-        
-        # 4. TRACKING STATE
-        self.tracked_ball = None
-        self.SMOOTHING = 0.6
-        self.MAX_MISSED = 10
-        self.missed_count = 0
 
-        # Initialize Camera
-        try:
-            self.picam2 = Picamera2()
-            config = self.picam2.create_video_configuration(
-                main={"format": "YUV420", "size": self.CAMERA_RES}
-            )
-            self.picam2.configure(config)
-            self.picam2.start()
-        except Exception as e:
-            print(f"Camera Init Failed: {e}")
-            self.running = False
-
-    def capture_thread(self):
-        """Dedicated thread to pull frames from the ISP as fast as possible."""
+    # FUNCTION TO THREAD THE FETCHING OF CAMERA FRAMES
+    def camera_stream(self):
         while self.running:
-            raw_frame = self.picam2.capture_array()
-            # Extract Y channel (Grayscale) immediately - fastest for OpenCV
-            gray = raw_frame[:self.CAMERA_RES[1], :self.CAMERA_RES[0]]
-            
+            img = self.picam2.capture_array()   # Capturing the frame from the camera
             with self.lock:
-                self.frame = gray
-            time.sleep(0.001) # Yield to main thread
+                self.frame = img
+            time.sleep(0.01)
 
-    def run(self):
-        # Start the capture thread
-        t = threading.Thread(target=self.capture_thread, daemon=True)
-        t.start()
+    def track_patterned_golf_balls(self):
 
-        print("Tracking started. Press 'q' to quit.")
-        
+        # MATH STUFF I DON'T UNDERSTAND (Contrast Limited Adaptive Histogram Equalization)
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)) 
+
+        # STARTING THE BUFFER FOR THE TRACKING
+        tracked_ball = None     # (px_x, px_y, radius, r, theta, z)
+        missed_frames = 0
+        MAX_MISSED_FRAMES = 6
+        SMOOTHING = 0.7         # EMA factor (closer to 1 = smoother)
+        results = (0, 0, 0)
+
+        # STARTING THE THREAD TO CAPTURE FRAMES
+        stream_thread = threading.Thread(target=self.camera_stream, daemon=True)
+        stream_thread.start()
+
         try:
             while self.running:
                 with self.lock:
                     if self.frame is None:
                         continue
-                    # Work on a copy of the latest frame
-                    working_frame = self.frame.copy()
+                    frame = self.frame.copy()
 
-                # A. FAST DOWNSIZE
-                proc_res = (self.PROC_WIDTH, int(working_frame.shape[0] * self.scale_factor))
-                small_frame = cv2.resize(working_frame, proc_res, interpolation=cv2.INTER_LINEAR)
-                cx, cy = proc_res[0] // 2, proc_res[1] // 2
+                h, w, _ = frame.shape   
+                cx, cy = w // 2, h // 2
 
-                # B. PATTERN-SENSITIVE PIPELINE
-                # Adaptive thresholding is king for white-on-white 
-                # It finds the "dimples" and "logo" even if the ball is white
-                thresh = cv2.adaptiveThreshold(
-                    small_frame, 255, 
-                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                    cv2.THRESH_BINARY_INV, 11, 2
-                )
+                # LAYERS OF IMAGE PROCESSING TO ISOLATE THE BALL
+                # 1. Applying CLAHE to lightness level to normalize lighting conditions
+                lab         = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)                        # converting the lightness, a (green-red axis), b (blue-yellow axis) colour space                  
+                l, a, b     = cv2.split(lab)
+                l_norm      = clahe.apply(l)                                                # normalizing the lightness channel using CLAHE                                                
+                final_bgr   = cv2.cvtColor(cv2.merge((l_norm, a, b)), cv2.COLOR_LAB2BGR)    
 
-                # C. MORPHOLOGY (Clean up the pattern noise)
-                # We close the gaps between the dimple shadows to form a solid circle
-                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-                closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-                
-                # D. FIND CONTOURS
-                contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                
+                # 2. Blurring image slightly and looking for sudden shifts in colour
+                blurred     = cv2.medianBlur(final_bgr, 7)                                  # applying median blur to reduce noise and small details (7x7 kernel)
+                edges       = cv2.Canny(blurred, 50, 150)                                   # using Canny edge detection to find sudden changes in colour (change 50 and 150 to adjust sensitivity)
+
+                # 3. Moving a kernel over the blended image to identify circles / ellipses
+                kernel      = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+                closed      = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+                # Creates empty black frame to layer edges onto
+                mask_display = np.zeros_like(edges)
+
+                # 4. Contour Detection
+                contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)  
+
                 best_candidate = None
+                best_score = 0
+
+                # TESTING CONTOUR AND DETERMINING A CONFIDENCE VALUE
                 for cnt in contours:
                     area = cv2.contourArea(cnt)
-                    if area < 100: continue
+                    #if area < 1000:
+                    #    continue
 
                     perimeter = cv2.arcLength(cnt, True)
-                    if perimeter == 0: continue
+                    if perimeter == 0:
+                        continue
 
-                    circularity = (4 * math.pi * area) / (perimeter ** 2)
-                    if circularity > 0.7:
+                    # TESTING CONTOUR SHAPE TO FIND HOW CIRCULAR IT IS
+                    circularity = (4 * math.pi * area) / (perimeter ** 2)   
+                    hull = cv2.convexHull(cnt)                              # Converting the contour into a convex hull (a rubber band around the edges of the shape)
+                    solidity = area / cv2.contourArea(hull)                 # Comparing the area of the contour with the area of what would be a solid circle (to find if there are holes in it)
+
+                    # COMPUTING A CONFIDENCE SCORE
+                    if circularity > 0.6 and solidity > 0.85:
                         ((px_x, px_y), radius) = cv2.minEnclosingCircle(cnt)
-                        # We use area as a confidence score
-                        if best_candidate is None or area > best_candidate[3]:
-                            best_candidate = (px_x, px_y, radius, area)
 
-                # D. COORDINATE MATH
-                if best_candidate:
-                    px_x, px_y, radius, _ = best_candidate
+                        score = circularity * solidity * area               # google told me to do it this way
+                        if score > best_score:
+                            best_score = score
+                            best_candidate = (cnt, px_x, px_y, radius)
+
+                # UPDATING THE BUFFER
+                if best_candidate is not None:
+                    cnt, px_x, px_y, radius = best_candidate
+
+                    # DRAWING THE SHAPE ON A FULL BLACK BACKDROP
+                    cv2.drawContours(mask_display, [cnt], -1, 255, -1)
+
+                    # CALCUATING COORDINTES RELATIVE TO THE CAMERA
                     z = (self.BALL_DIAM_MM * self.FOCAL_LENGTH) / (radius * 2)
                     x_off = (px_x - cx) * (z / self.FOCAL_LENGTH)
                     y_off = (px_y - cy) * (z / self.FOCAL_LENGTH)
-                    
-                    r = math.sqrt(x_off**2 + y_off**2)
+
+                    # CALCULATING R AND THETA (not needed now)
+                    r = math.sqrt(x_off ** 2 + y_off ** 2)
                     theta = math.degrees(math.atan2(y_off, x_off))
-                    
-                    new_data = (px_x, px_y, radius, r, theta, z)
-                    
-                    if self.tracked_ball is None:
-                        self.tracked_ball = new_data
+
+                    # UPDATING THE TRACKED BALL 
+                    # if no ball is detected then buffer remains in current spot until MAX_MISSED_FRAMES is reached
+                    if tracked_ball is None:
+                        tracked_ball = (px_x, px_y, radius, r, theta, z)
+                    # if a ball is detected then it smoothes the movement of the buffer
                     else:
-                        self.tracked_ball = tuple(
-                            self.SMOOTHING * old + (1 - self.SMOOTHING) * new 
-                            for old, new in zip(self.tracked_ball, new_data)
+                        tracked_ball = tuple(
+                            SMOOTHING * old + (1 - SMOOTHING) * new     
+                            for old, new in zip(
+                                tracked_ball,
+                                (px_x, px_y, radius, r, theta, z)
+                            )
                         )
-                    self.missed_count = 0
+                    missed_frames = 0
+                
+                # IF NO BALL IS DETECTED
+                # Simply updates the missed frame counter and checks if the number of missed frames means that no ball is being tracked
                 else:
-                    self.missed_count += 1
-                    if self.missed_count > self.MAX_MISSED:
-                        self.tracked_ball = None
+                    missed_frames += 1
+                    if missed_frames > MAX_MISSED_FRAMES:
+                        tracked_ball = None
 
-                # E. DISPLAY
-                display_img = cv2.cvtColor(small_frame, cv2.COLOR_GRAY2BGR)
-                if self.tracked_ball:
-                    bx, by, brad, _, _, bz = self.tracked_ball
-                    cv2.circle(display_img, (int(bx), int(by)), int(brad), (0, 255, 0), 2)
-                    cv2.putText(display_img, f"{int(bz)}mm", (int(bx), int(by)-10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                # DRAWING BALL AND ACCOMPANYING TEXT
+                if tracked_ball is not None:
+                    px_x, px_y, radius, r, theta, z = tracked_ball
+                    results = (r, theta, z)
 
-                cv2.imshow("Threaded Tracker", display_img)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    self.running = False
+                    cv2.circle(frame, 
+                               (int(px_x), int(px_y)), 
+                               int(radius), 
+                               (0, 255, 0), 
+                               2)
+
+                    cv2.putText(frame, 
+                                f"Dist: {int(z)}mm", 
+                                (int(px_x), int(px_y) - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 
+                                0.5, 
+                                (0, 255, 0),
+                                2)
+
+                # DISPLAYING THE FRAMES OF THE NORMAL CAMERA AND THE ISOLATED MASK TO SEE WHAT'S BEING TRACKED
+                cv2.imshow("Original Feed (CLAHE Normalized)", cv2.resize(frame, (800, 600)))
+                cv2.imshow("Golf Ball Isolation Mask (B&W)", cv2.resize(mask_display, (800, 600)))
 
         finally:
-            self.running = False
             self.picam2.stop()
             cv2.destroyAllWindows()
 
+        return results
+
 if __name__ == "__main__":
     tracker = GolfBallTracker()
-    tracker.run()
+    data = tracker.track_patterned_golf_balls()
+    print(f"Final Data (r, theta, z): {data}")
