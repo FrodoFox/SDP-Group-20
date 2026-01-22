@@ -7,7 +7,7 @@ def track_patterned_golf_balls():
     # 1. CAMERA CONFIGURATION
     # Pi Camera V2.1 Max Resolution is 3280 x 2464
     # Note: Processing 8MP frames in real-time on a Pi will be slow. 
-    RESOLUTION = (3280, 2464) 
+    RESOLUTION = (1640, 1232) 
     
     picam2 = Picamera2()
     config = picam2.create_video_configuration(main={"format": "BGR888", "size": RESOLUTION})
@@ -16,7 +16,7 @@ def track_patterned_golf_balls():
 
     # Constants for distance calculation
     BALL_DIAM_MM = 42.67    # Standard golf ball diameter in mm
-    FOCAL_LENGTH = 2714     # in pixels, needs calibration for accuracy
+    FOCAL_LENGTH = 1357     # in pixels, needs calibration for accuracy
 
     # Image Processing Tools
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
