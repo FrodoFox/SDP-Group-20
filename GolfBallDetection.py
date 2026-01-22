@@ -84,6 +84,7 @@ class GolfBallTracker:
                 # TESTING CONTOUR AND DETERMINING A CONFIDENCE VALUE
                 for cnt in contours:
                     area = cv2.contourArea(cnt)
+                    # COMPARES THE AREA OF THE CONTOUR SO THAT IT DOESN'T PICK UP EVERY SHAPE IN THE FRAME- DO NOT DELETE
                     if area < 1000:
                         continue
 
