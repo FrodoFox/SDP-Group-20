@@ -1,135 +1,140 @@
 import cv2
 import numpy as np
 import math
+import threading
+import time
 from picamera2 import Picamera2
 
-def track_patterned_golf_balls():
-    # 1. CAMERA CONFIGURATION
-    # Pi Camera V2.1 Max Resolution is 3280 x 2464
-    # Note: Processing 8MP frames in real-time on a Pi will be slow. 
-    RESOLUTION = (1640, 1232) 
-    
-    picam2 = Picamera2()
-    config = picam2.create_video_configuration(main={"format": "BGR888", "size": RESOLUTION})
-    picam2.configure(config)
-    picam2.start()
+class GolfBallTracker:
+    def __init__(self):
+        # 1. CAMERA SETTINGS
+        self.CAMERA_RES = (1640, 1232)  # Binned high-res for better SNR
+        self.PROC_WIDTH = 640           # Width for math processing (Fast!)
+        self.scale_factor = self.PROC_WIDTH / self.CAMERA_RES[0]
+        
+        # 2. CALIBRATED MATH
+        # Scale focal length: 1357 is for 1640px width.
+        self.FOCAL_LENGTH = 1357 * self.scale_factor
+        self.BALL_DIAM_MM = 42.67
 
-    # Constants for distance calculation
-    BALL_DIAM_MM = 42.67    # Standard golf ball diameter in mm
-    FOCAL_LENGTH = 1357     # in pixels, needs calibration for accuracy
+        # 3. THREADING SHARED VARIABLES
+        self.frame = None
+        self.running = True
+        self.lock = threading.Lock()
+        
+        # 4. TRACKING STATE
+        self.tracked_ball = None
+        self.SMOOTHING = 0.6
+        self.MAX_MISSED = 10
+        self.missed_count = 0
 
-    # Image Processing Tools
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    
-    # Tracking State
-    tracked_ball = None   # (px_x, px_y, radius, r, theta, z)
-    missed_frames = 0
-    MAX_MISSED_FRAMES = 6
-    SMOOTHING = 0.7        
-    results = (0, 0, 0)
+        # Initialize Camera
+        try:
+            self.picam2 = Picamera2()
+            config = self.picam2.create_video_configuration(
+                main={"format": "YUV420", "size": self.CAMERA_RES}
+            )
+            self.picam2.configure(config)
+            self.picam2.start()
+        except Exception as e:
+            print(f"Camera Init Failed: {e}")
+            self.running = False
 
-    print(f"Camera Started at {RESOLUTION}. Press 'Ctrl+C' in terminal to stop.")
-
-    try:
-        while True:
-            # 2. CAPTURE FRAME
-            frame = picam2.capture_array()
+    def capture_thread(self):
+        """Dedicated thread to pull frames from the ISP as fast as possible."""
+        while self.running:
+            raw_frame = self.picam2.capture_array()
+            # Extract Y channel (Grayscale) immediately - fastest for OpenCV
+            gray = raw_frame[:self.CAMERA_RES[1], :self.CAMERA_RES[0]]
             
-            h, w, _ = frame.shape
-            cx, cy = w // 2, h // 2
+            with self.lock:
+                self.frame = gray
+            time.sleep(0.001) # Yield to main thread
 
-            # 3. COLOUR SPACE TRANSFORMATION & NORMALIZATION
-            lab         = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-            l, a, b     = cv2.split(lab)
-            l_norm      = clahe.apply(l)
-            final_bgr   = cv2.cvtColor(cv2.merge((l_norm, a, b)), cv2.COLOR_LAB2BGR)
+    def run(self):
+        # Start the capture thread
+        t = threading.Thread(target=self.capture_thread, daemon=True)
+        t.start()
 
-            # 4. EDGE DETECTION & MORPHOLOGY
-            # We use a median blur to reduce noise before Canny
-            blurred     = cv2.medianBlur(final_bgr, 7)
-            edges       = cv2.Canny(blurred, 50, 150)
+        print("Tracking started. Press 'q' to quit.")
+        
+        try:
+            while self.running:
+                with self.lock:
+                    if self.frame is None:
+                        continue
+                    # Work on a copy of the latest frame
+                    working_frame = self.frame.copy()
 
-            # Morphological Closing to fill gaps in the detected edges of the ball
-            kernel      = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-            closed      = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+                # A. FAST DOWNSIZE
+                proc_res = (self.PROC_WIDTH, int(working_frame.shape[0] * self.scale_factor))
+                small_frame = cv2.resize(working_frame, proc_res, interpolation=cv2.INTER_LINEAR)
+                cx, cy = proc_res[0] // 2, proc_res[1] // 2
 
-            # 5. CONTOUR DETECTION
-            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            best_candidate = None
-            best_score = 0
-
-            for cnt in contours:
-                area = cv2.contourArea(cnt)
-                # Scaled area check (higher resolution needs higher min area)
-                if area < 1000: 
-                    continue
-
-                perimeter = cv2.arcLength(cnt, True)
-                if perimeter == 0: continue
-
-                circularity = (4 * math.pi * area) / (perimeter ** 2)
-                hull = cv2.convexHull(cnt)
-                solidity = area / cv2.contourArea(hull)
-
-                # Look for high circularity and solidity (typical of a sphere)
-                if circularity > 0.6 and solidity > 0.85:
-                    ((px_x, px_y), radius) = cv2.minEnclosingCircle(cnt)
-                    score = circularity * solidity * area
-                    if score > best_score:
-                        best_score = score
-                        best_candidate = (cnt, px_x, px_y, radius)
-
-            # 6. COORDINATE CALCULATION & FILTERING
-            if best_candidate is not None:
-                cnt, px_x, px_y, radius = best_candidate
+                # B. COMPUTER VISION PIPELINE
+                blurred = cv2.GaussianBlur(small_frame, (5, 5), 0)
+                edges = cv2.Canny(blurred, 70, 150)
                 
-                # Z calculation: Dist = (KnownDiam * FocalLength) / PixelDiameter
-                z = (BALL_DIAM_MM * FOCAL_LENGTH) / (radius * 2)
-                x_off = (px_x - cx) * (z / FOCAL_LENGTH)
-                y_off = (px_y - cy) * (z / FOCAL_LENGTH)
+                # C. FIND CONTOURS
+                contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                best_candidate = None
+                for cnt in contours:
+                    area = cv2.contourArea(cnt)
+                    if area < 100: continue
 
-                r = math.sqrt(x_off ** 2 + y_off ** 2)
-                theta = math.degrees(math.atan2(y_off, x_off))
+                    perimeter = cv2.arcLength(cnt, True)
+                    if perimeter == 0: continue
 
-                if tracked_ball is None:
-                    tracked_ball = (px_x, px_y, radius, r, theta, z)
+                    circularity = (4 * math.pi * area) / (perimeter ** 2)
+                    if circularity > 0.7:
+                        ((px_x, px_y), radius) = cv2.minEnclosingCircle(cnt)
+                        # We use area as a confidence score
+                        if best_candidate is None or area > best_candidate[3]:
+                            best_candidate = (px_x, px_y, radius, area)
+
+                # D. COORDINATE MATH
+                if best_candidate:
+                    px_x, px_y, radius, _ = best_candidate
+                    z = (self.BALL_DIAM_MM * self.FOCAL_LENGTH) / (radius * 2)
+                    x_off = (px_x - cx) * (z / self.FOCAL_LENGTH)
+                    y_off = (px_y - cy) * (z / self.FOCAL_LENGTH)
+                    
+                    r = math.sqrt(x_off**2 + y_off**2)
+                    theta = math.degrees(math.atan2(y_off, x_off))
+                    
+                    new_data = (px_x, px_y, radius, r, theta, z)
+                    
+                    if self.tracked_ball is None:
+                        self.tracked_ball = new_data
+                    else:
+                        self.tracked_ball = tuple(
+                            self.SMOOTHING * old + (1 - self.SMOOTHING) * new 
+                            for old, new in zip(self.tracked_ball, new_data)
+                        )
+                    self.missed_count = 0
                 else:
-                    # Exponential Moving Average Smoothing
-                    tracked_ball = tuple(
-                        SMOOTHING * old + (1 - SMOOTHING) * new
-                        for old, new in zip(tracked_ball, (px_x, px_y, radius, r, theta, z))
-                    )
-                missed_frames = 0
-            else:
-                missed_frames += 1
-                if missed_frames > MAX_MISSED_FRAMES:
-                    tracked_ball = None
+                    self.missed_count += 1
+                    if self.missed_count > self.MAX_MISSED:
+                        self.tracked_ball = None
 
-            # 7. VISUALIZATION
-            if tracked_ball is not None:
-                px_x, px_y, radius, r, theta, z = tracked_ball
-                results = (r, theta, z)
+                # E. DISPLAY
+                display_img = cv2.cvtColor(small_frame, cv2.COLOR_GRAY2BGR)
+                if self.tracked_ball:
+                    bx, by, brad, _, _, bz = self.tracked_ball
+                    cv2.circle(display_img, (int(bx), int(by)), int(brad), (0, 255, 0), 2)
+                    cv2.putText(display_img, f"{int(bz)}mm", (int(bx), int(by)-10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-                cv2.circle(frame, (int(px_x), int(px_y)), int(radius), (0, 255, 0), 2)
-                cv2.putText(frame, f"Dist: {int(z)}mm", (int(px_x), int(px_y) - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                cv2.imshow("Threaded Tracker", display_img)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    self.running = False
 
-            # Displaying high-res windows can be heavy; resize for preview
-            preview_frame = cv2.resize(frame, (800, 600))
-            cv2.imshow("PiCam V2 Tracking", preview_frame)
-
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-
-    except KeyboardInterrupt:
-        print("Interrupted by user.")
-    finally:
-        picam2.stop()
-        cv2.destroyAllWindows()
-
-    return results
+        finally:
+            self.running = False
+            self.picam2.stop()
+            cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    data = track_patterned_golf_balls()
-    print(f"Final Tracking Data (r, theta, z): {data}")
+    tracker = GolfBallTracker()
+    tracker.run()
