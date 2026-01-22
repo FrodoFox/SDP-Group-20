@@ -1,174 +1,135 @@
 import cv2
 import numpy as np
 import math
-import time   # ADDED
-from picamera2 import Picamera2, Preview
+from picamera2 import Picamera2
 
 def track_patterned_golf_balls():
-    # Constants Required for scaling of goolf balls to detemine z coordiante
-    BALL_DIAM_MM = 42.67        # As googled (42.87mm)
-    FOCAL_LENGTH = 600          # Length between len's center and cameras sensor (varies per camera)
+    # 1. CAMERA CONFIGURATION
+    # Pi Camera V2.1 Max Resolution is 3280 x 2464
+    # Note: Processing 8MP frames in real-time on a Pi will be slow. 
+    RESOLUTION = (3280, 2464) 
+    
+    picam2 = Picamera2()
+    config = picam2.create_video_configuration(main={"format": "BGR888", "size": RESOLUTION})
+    picam2.configure(config)
+    picam2.start()
 
-    cap = cv2.VideoCapture(0)   # Passing default camera to video capture
-    if not cap.isOpened():      # Error handle case
-        return []
+    # Constants for distance calculation
+    BALL_DIAM_MM = 42.67    # Standard golf ball diameter in mm
+    FOCAL_LENGTH = 2714     # in pixels, needs calibration for accuracy
 
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)) # Contrast Limited Adaptive Histogram Equalization - Basically a mathematical function to fix funky light levels
-
-    print("Press 'q' to stop.")
-
-    # INITIALISING BUFFER FOR CONTOUR AND CAMERA DISPLAY ( Essentially a data structure but those don't really exist in python )
+    # Image Processing Tools
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    
+    # Tracking State
     tracked_ball = None   # (px_x, px_y, radius, r, theta, z)
     missed_frames = 0
     MAX_MISSED_FRAMES = 6
-    SMOOTHING = 0.7        # EMA factor (closer to 1 = smoother)
+    SMOOTHING = 0.7        
+    results = (0, 0, 0)
+
+    print(f"Camera Started at {RESOLUTION}. Press 'Ctrl+C' in terminal to stop.")
 
     try:
-
         while True:
-
-            ret, frame = cap.read() # Handling raw frame data and breaking if a frame isn't returned
-            if not ret:
-                break
-
-            h, w, _ = frame.shape   # Attainnig the height and width of a single frame by unpacking the first two params of the frame and throwing away everything else
+            # 2. CAPTURE FRAME
+            frame = picam2.capture_array()
+            
+            h, w, _ = frame.shape
             cx, cy = w // 2, h // 2
 
-            # 1. Applying masks and light filtering to try and isolate shapes
-            lab         = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)                        # Converts to the LAB colour space (lightness, colour spectrum (green to magenta), Colour spectrum (blue to yellow))
+            # 3. COLOUR SPACE TRANSFORMATION & NORMALIZATION
+            lab         = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
             l, a, b     = cv2.split(lab)
-            l_norm      = clahe.apply(l)                                                # Uses the CLAHE algorithm from earlier to raise the contrast of shaded edges on the light level of the new colour space
-            final_bgr   = cv2.cvtColor(cv2.merge((l_norm, a, b)), cv2.COLOR_LAB2BGR)    # Merges the contrasted light level, original a and original b back together and it converts back to standard RGB
+            l_norm      = clahe.apply(l)
+            final_bgr   = cv2.cvtColor(cv2.merge((l_norm, a, b)), cv2.COLOR_LAB2BGR)
 
-            # 2. Blurring image slightly and looking for sudden shifts in colour for edge detection
+            # 4. EDGE DETECTION & MORPHOLOGY
+            # We use a median blur to reduce noise before Canny
             blurred     = cv2.medianBlur(final_bgr, 7)
             edges       = cv2.Canny(blurred, 50, 150)
 
-            # 3. Moving a kernel over the blended image to identify circles / ellipses
+            # Morphological Closing to fill gaps in the detected edges of the ball
             kernel      = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
             closed      = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
 
-            # Creates empty black frame to layer edges onto - edges in this case are the width and height
-            mask_display = np.zeros_like(edges)
-
-            # 4. Contour Detection
-            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)  # Function takes arrays 
-
+            # 5. CONTOUR DETECTION
+            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
             best_candidate = None
             best_score = 0
 
-
-            # TESTING CONTOUR AND DETERMINING A CONFIDENCE VALUE
             for cnt in contours:
-
-                # BASIC ERROR CORRECTION FOR MASSIVE SURFACE OR TINY SURFACE
                 area = cv2.contourArea(cnt)
-                if area < 400:
+                # Scaled area check (higher resolution needs higher min area)
+                if area < 1000: 
                     continue
 
                 perimeter = cv2.arcLength(cnt, True)
-                if perimeter == 0:
-                    continue
+                if perimeter == 0: continue
 
-                # Testing contour shape to see how circular it is
-                circularity = (4 * math.pi * area) / (perimeter ** 2)   # Checking how circular a detected object is by checking its perimeter against area (perfect circle: 1, square: 0.785)
-                hull = cv2.convexHull(cnt)                              # Getting the shape of the circumpherance of whatever shape has been picked up
-                solidity = area / cv2.contourArea(hull)                 # How much of the hull is filled in by the area (checking if it has holes in it)
+                circularity = (4 * math.pi * area) / (perimeter ** 2)
+                hull = cv2.convexHull(cnt)
+                solidity = area / cv2.contourArea(hull)
 
-                # Determining a confidence score based on above calculations
+                # Look for high circularity and solidity (typical of a sphere)
                 if circularity > 0.6 and solidity > 0.85:
                     ((px_x, px_y), radius) = cv2.minEnclosingCircle(cnt)
-
-                    # Simple confidence score
                     score = circularity * solidity * area
                     if score > best_score:
                         best_score = score
                         best_candidate = (cnt, px_x, px_y, radius)
 
-
-
-            # UPDATING THE BUFFER
+            # 6. COORDINATE CALCULATION & FILTERING
             if best_candidate is not None:
                 cnt, px_x, px_y, radius = best_candidate
-
-                # Drawing the isolated white value to the full black background
-                cv2.drawContours(mask_display, [cnt], -1, 255, -1)
-
-                # Calculating coordinates
+                
+                # Z calculation: Dist = (KnownDiam * FocalLength) / PixelDiameter
                 z = (BALL_DIAM_MM * FOCAL_LENGTH) / (radius * 2)
                 x_off = (px_x - cx) * (z / FOCAL_LENGTH)
                 y_off = (px_y - cy) * (z / FOCAL_LENGTH)
 
-                # Calculating r and theta based off this relative to the camera (probably better to change this later)
                 r = math.sqrt(x_off ** 2 + y_off ** 2)
                 theta = math.degrees(math.atan2(y_off, x_off))
 
-                # Update the buffer to track a completely new ball so using the raw coordinates
                 if tracked_ball is None:
                     tracked_ball = (px_x, px_y, radius, r, theta, z)
-
-                # Update the buffer with smoothed out values between the old and new coordinates
                 else:
+                    # Exponential Moving Average Smoothing
                     tracked_ball = tuple(
-                        SMOOTHING * old + (1 - SMOOTHING) * new     # Smoothing function for movement I found online
-                        for old, new in zip(
-                            tracked_ball,
-                            (px_x, px_y, radius, r, theta, z)
-                        )
+                        SMOOTHING * old + (1 - SMOOTHING) * new
+                        for old, new in zip(tracked_ball, (px_x, px_y, radius, r, theta, z))
                     )
-
-                # Reset the missed frames (used in determining if it's been too long since a buffer update)
                 missed_frames = 0
-
             else:
                 missed_frames += 1
                 if missed_frames > MAX_MISSED_FRAMES:
                     tracked_ball = None
 
-
-
-            # DRAWING BALL AND ACCOMPANYING TEXT
+            # 7. VISUALIZATION
             if tracked_ball is not None:
                 px_x, px_y, radius, r, theta, z = tracked_ball
-
-                # Return a tuple of r, theta, z
                 results = (r, theta, z)
 
-                cv2.circle(
-                    frame,
-                    (int(px_x), int(px_y)),
-                    int(radius),
-                    (0, 255, 0),
-                    2
-                )
+                cv2.circle(frame, (int(px_x), int(px_y)), int(radius), (0, 255, 0), 2)
+                cv2.putText(frame, f"Dist: {int(z)}mm", (int(px_x), int(px_y) - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-                cv2.putText(
-                    frame,
-                    f"Dist: {int(z)}mm",
-                    (int(px_x), int(px_y) - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 255, 0),
-                    2
-                )
+            # Displaying high-res windows can be heavy; resize for preview
+            preview_frame = cv2.resize(frame, (800, 600))
+            cv2.imshow("PiCam V2 Tracking", preview_frame)
 
-
-
-            cv2.imshow("Original Feed (CLAHE Normalized)", frame)
-            cv2.imshow("Golf Ball Isolation Mask (B&W)", mask_display)
-
-            # Quit on "q" key input
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
-    # Whatever happens release the camera and delete the frames
+    except KeyboardInterrupt:
+        print("Interrupted by user.")
     finally:
-        cap.release()
+        picam2.stop()
         cv2.destroyAllWindows()
 
     return results
 
-
 if __name__ == "__main__":
     data = track_patterned_golf_balls()
-    print(data)
+    print(f"Final Tracking Data (r, theta, z): {data}")
