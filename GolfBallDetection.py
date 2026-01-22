@@ -84,8 +84,8 @@ class GolfBallTracker:
                 # TESTING CONTOUR AND DETERMINING A CONFIDENCE VALUE
                 for cnt in contours:
                     area = cv2.contourArea(cnt)
-                    #if area < 1000:
-                    #    continue
+                    if area < 1000:
+                        continue
 
                     perimeter = cv2.arcLength(cnt, True)
                     if perimeter == 0:
