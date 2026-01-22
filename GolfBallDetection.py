@@ -71,12 +71,22 @@ class GolfBallTracker:
                 small_frame = cv2.resize(working_frame, proc_res, interpolation=cv2.INTER_LINEAR)
                 cx, cy = proc_res[0] // 2, proc_res[1] // 2
 
-                # B. COMPUTER VISION PIPELINE
-                blurred = cv2.GaussianBlur(small_frame, (5, 5), 0)
-                edges = cv2.Canny(blurred, 70, 150)
+                # B. PATTERN-SENSITIVE PIPELINE
+                # Adaptive thresholding is king for white-on-white 
+                # It finds the "dimples" and "logo" even if the ball is white
+                thresh = cv2.adaptiveThreshold(
+                    small_frame, 255, 
+                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                    cv2.THRESH_BINARY_INV, 11, 2
+                )
+
+                # C. MORPHOLOGY (Clean up the pattern noise)
+                # We close the gaps between the dimple shadows to form a solid circle
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
                 
-                # C. FIND CONTOURS
-                contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                # D. FIND CONTOURS
+                contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 
                 best_candidate = None
                 for cnt in contours:
