@@ -93,8 +93,8 @@ class GolfBallTracker:
 
                     # TESTING CONTOUR SHAPE TO FIND HOW CIRCULAR IT IS
                     circularity = (4 * math.pi * area) / (perimeter ** 2)   
-                    hull = cv2.convexHull(cnt)                              # Converting the contour into a convex hull
-                    solidity = area / cv2.contourArea(hull)                 # Comparing the area of the contour with the area of what would be a solid circle
+                    hull = cv2.convexHull(cnt)                              # Converting the contour into a convex hull - Equivalent to stretching a rubber band around the shape detected by pixels
+                    solidity = area / cv2.contourArea(hull)                 # Comparing the area of pixels detected by the camera to the area detected by putting a rubber band around it (filtering shadows and obstructions)
 
                     # COMPUTING A CONFIDENCE SCORE
                     if circularity > 0.6 and solidity > 0.85:
