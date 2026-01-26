@@ -1,5 +1,5 @@
 import time
-from grove.motor.i2c_motor_driver import MotorDriver, I2CStepperMotor
+from grove.motor.i2c_motor_driver import I2CStepperMotor
 
 params = {
     'var-ratio': 64,          # Gear ratio
