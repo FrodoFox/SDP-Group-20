@@ -22,16 +22,24 @@ def move_stepper(degrees, direction):
     print(f"Moving {degrees} degrees {'Clockwise' if direction == 1 else 'Anti-clockwise'}...")
     
     try:
-        motor.speed(speed_rpm)
-        motor.rotate(degrees)
+        # 1. Enable and set speed BEFORE sending the rotation command
         motor.enable(True)
+        motor.speed(speed_rpm)
+        
+        # 2. Trigger the rotation
+        motor.rotate(degrees)
+        
+        # 3. Give the I2C bus a tiny moment to update its internal registers
+        time.sleep(0.1)
         
         # WAITING FOR THE MOVEMENT TO FINISH
         while True:
             left = motor.rotate() # get remaining number of degrees to rotate
-            if left < 0.1:
+            remaining = abs(left)
+            
+            if remaining < 0.1:
                 break
-            print(f"Angle remaining: {left:.2f}")
+            print(f"Angle remaining: {remaining:.2f}")
             time.sleep(0.2)
             
         print("Movement complete.")
