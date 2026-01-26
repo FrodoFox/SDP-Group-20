@@ -1,19 +1,33 @@
 import time
 from grove.grove_i2c_motor_driver import MotorDriver
 
-motor = MotorDriver()
+params = {
+    'var-ratio': 64,          # Gear ratio
+    'stride-angle': 5.625,    # Step angle
+    'rpm-max': 12,            # Max speed
+    'sequences': [0b0001, 0b0011, 0b0010, 0b0110, 0b0100, 0b1100, 0b1000, 0b1001]
+}
 
-# Enable the stepper motor (Documentation for this sucks)
-motor._MotorDriver__EnableStepper()
+# 2. Initialize the correct class
+motor = I2CStepperMotor(params)
 
-print("Stepper moving... Ctrl+C to stop.")
+# 3. Setup speed and movement
+motor.speed(10)  # 10 RPM
+motor.rotate(360) # Prepare to rotate 360 degrees
 
+print("Starting Stepper...")
 try:
+    motor.enable(True) # This sends the Enable and Sequence commands
+    
     while True:
-        # Stepernu(number_of_steps, direction)
-        motor._MotorDriver__Stepernu(100, 0)
+        left = motor.rotate() # Checks how many degrees are left
+        if left < 0.1:
+            print("Movement complete.")
+            break
+        print(f"Angle remaining: {left:.2f}")
         time.sleep(0.5)
-        
+
 except KeyboardInterrupt:
-    motor._MotorDriver__UnenableStepper()
-    print("\nStopped and coils de-energized.")
+    print("\nEmergency Stop")
+finally:
+    motor.enable(False) # De-energize coils
