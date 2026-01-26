@@ -1,23 +1,24 @@
 import time
 from grove.motor.i2c_motor_driver import I2CStepperMotor
 
+# Parameters for the stepper motor (using NEMA 23 (maybe??))
 params = {
-    'var-ratio': 64,          # Gear ratio
-    'stride-angle': 5.625,    # Step angle
-    'rpm-max': 12,            # Max speed
-    'sequences': [0b0001, 0b0011, 0b0010, 0b0110, 0b0100, 0b1100, 0b1000, 0b1001]
+    'var-ratio': 1,         # Gear ratio
+    'stride-angle': 1.8,    # Step angle
+    'rpm-max': 12,          # Max speed
+    'sequences': [0b0001, 0b0011, 0b0010, 0b0110, 0b0100, 0b1100, 0b1000, 0b1001] # (don't change these)
 }
 
-# 2. Initialize the correct class
+# Initialise the motor
 motor = I2CStepperMotor(params)
 
 # 3. Setup speed and movement
-motor.speed(10)  # 10 RPM
-motor.rotate(360) # Prepare to rotate 360 degrees
+motor.speed(10)  # n RPM
+motor.rotate(360) # Rotate 360 degrees
 
 print("Starting Stepper...")
 try:
-    motor.enable(True) # This sends the Enable and Sequence commands
+    motor.enable(True) # This enables the motor and executes the movement
     
     while True:
         left = motor.rotate() # Checks how many degrees are left
@@ -30,4 +31,4 @@ try:
 except KeyboardInterrupt:
     print("\nEmergency Stop")
 finally:
-    motor.enable(False) # De-energize coils
+    motor.enable(False) # Disable the motor (needs done to prevent overheating)
