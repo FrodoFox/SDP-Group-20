@@ -7,20 +7,31 @@ set host "metapod"
 set password "r00t"
 set target_dir "/home/pi/SDP-Group-20"
 
-# GITHUB CONFIG (Required for the local push)
+# GITHUB CONFIG
 set git_user "git user"
 set git_token "git token"
 
-# Regex pattern for prompts
-set prompt_pattern {.*[\$#]\s$}
-
 # 1. --- LOCAL GIT PHASE ---
-puts "\n>>> Phase 1: Git Push..."
+puts "\n>>> Phase 1: Syncing with GitHub (Local)..."
+
+# Ensure we have the latest from GitHub to prevent conflicts later
+spawn git pull --rebase origin main
+expect {
+    "Username for 'https://github.com':" { send "$git_user\r"; exp_continue }
+    "Password for 'https://*':" { send "$git_token\r"; exp_continue }
+    "Successfully rebased" { puts "Rebase successful." }
+    "Already up to date." { puts "No new changes from remote." }
+    eof
+}
+
+# Commit any local changes you've made
 spawn git add .
 expect eof
-spawn git commit -m "Automated update before transfer"
+spawn git commit -m "Automated update before offline transfer"
 expect eof
-spawn git push
+
+# Push the merged state back to GitHub
+spawn git push origin main
 expect {
     "Username for 'https://github.com':" { send "$git_user\r"; exp_continue }
     "Password for 'https://*':" { send "$git_token\r"; exp_continue }
@@ -33,41 +44,31 @@ spawn ssh $user@$host "mkdir -p $target_dir"
 expect "password:" { send "$password\r" }
 expect eof
 
-spawn rsync -avz \
-    --exclude=.git/ \
-    --exclude=.gitignore \
-    --exclude=*.expect \
-    --exclude=*.md \
-    ./ \
-    $user@$host:$target_dir
-expect {
-    "password:" {
-        send "$password\r"
-    }
-}
+# Use rsync to sync files (excluding git metadata to prevent corruption)
+spawn rsync -avz --exclude=.git/ --exclude=.gitignore --exclude=*.expect ./ $user@$host:$target_dir
+expect "password:" { send "$password\r" }
 expect eof
 
-# 3. --- LOGIN PHASE ---
-puts "\n>>> Phase 3: Logging in (Handover)..."
-spawn ssh -t $user@$host "export TERM=dumb; bash -i"
+# 3. --- REMOTE RECONCILIATION PHASE ---
+puts "\n>>> Phase 3: Merging Remote Changes Safely..."
+spawn ssh -t $user@$host "cd $target_dir && bash -i"
+expect "password:" { send "$password\r" }
 
+# Wait for the prompt
+expect -re {[\$#] }
+
+# Set the safety strategy: Rebase
+# This puts your local changes 'on top' of the incoming GitHub changes
+send "git config pull.rebase true\r"
+expect -re {[\$#] }
+
+# Now pull. If there are actual code conflicts, it will stop and let you fix them.
+send "git pull origin main\r"
 expect {
-    "password:" {
-        send "$password\r"
-        exp_continue
-    }
-    -re {\$ } {
-        # We found the dollar sign and space!
-        puts "\n>>> Prompt detected."
-    }
-    timeout {
-        puts "\n>>> ERROR: Could not find prompt after login."
-        exit 1
-    }
+    "Username for 'https://github.com':" { send "$git_user\r"; exp_continue }
+    "Password for 'https://*':" { send "$git_token\r"; exp_continue }
+    -re {[\$#] }
 }
 
-# Navigate
-send "cd $target_dir\r"
-expect -re {\$ }
-
+puts "\n>>> Sync complete. Handing over to you..."
 interact
