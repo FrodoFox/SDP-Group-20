@@ -6,9 +6,9 @@ RPM = 10 # Define a default RPM
 
 # DEFINE PARAMS FOR THE MOTOR (using nema 23 stepper motor - different params available in documentation online)
 params = {
-    'var-ratio': 1,         # Internal gear ratio
-    'stride-angle': 1.8,    # Step angle of motor
-    'rpm-max': 12,          # Maximum RPM of motor
+    'var-ratio': 1,         # internal gear ratio
+    'stride-angle': 1.8,    # step angle of motor
+    'rpm-max': 12,          # maximum RPM of motor
     'sequences': [0b0001, 0b0011, 0b0010, 0b0110, 0b0100, 0b1100, 0b1000, 0b1001]   # Defining sequences of motor (8-step sequence for NEMA 23 - as well as the standard for stepper motors)
 }
 
