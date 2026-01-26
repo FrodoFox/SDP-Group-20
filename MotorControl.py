@@ -3,15 +3,15 @@ from grove.grove_i2c_motor_driver import MotorDriver
 
 motor = MotorDriver()
 
-motor.set_dir(True)
-motor.set_speed(255)
-
-print("Motor spinning continuously. Ctrl+C to stop.")
+print("Moving stepper... Ctrl+C to stop.")
 
 try:
     while True:
-        motor.StepperRun(200, 50)  
-        time.sleep(0.1)
+        motor.set_speed(255, 255) # Sets speed for both M1 and M2
+        time.sleep(1)
+        motor.stop()
+        break
+        
 except KeyboardInterrupt:
     motor.stop()
-    print("stopped")
+    print("Stopped")
