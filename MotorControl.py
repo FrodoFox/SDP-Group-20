@@ -2,68 +2,80 @@ import time
 import sys
 from grove.motor.i2c_motor_driver import I2CStepperMotor
 
-RPM = 10 # Define a default RPM
+RPM = 10 
 
-# DEFINE PARAMS FOR THE MOTOR (using nema 23 stepper motor - different params available in documentation online)
+# DEFINE PARAMS FOR THE MOTOR
 params = {
-    'var-ratio': 1,         # Internal gear ratio
-    'stride-angle': 1.8,    # Step angle of motor
-    'rpm-max': 12,          # Maximum RPM of motor
-    'sequences': [0b0001, 0b0011, 0b0010, 0b0110, 0b0100, 0b1100, 0b1000, 0b1001]   # Defining sequences of motor (8-step sequence for NEMA 23 - as well as the standard for stepper motors)
+    'var-ratio': 1,
+    'stride-angle': 1.8,
+    'rpm-max': 12,
+    'sequences': [0b0001, 0b0011, 0b0010, 0b0110, 0b0100, 0b1100, 0b1000, 0b1001]
 }
 
 motor = I2CStepperMotor(params)
 
 def move_stepper(degrees, direction):
-
-    # Setting RPM - positive for clockwise and negative for anti-clockwise
     speed_rpm = RPM if direction == 1 else -RPM
     
+    # MATH: Calculate how long it SHOULD take. 
+    # (degrees/360) is fraction of a turn. (RPM/60) is revs per second.
+    expected_duration = (degrees / 360.0) / (RPM / 60.0)
+    
     print(f"Moving {degrees} degrees {'Clockwise' if direction == 1 else 'Anti-clockwise'}...")
+    print(f"Estimated time: {expected_duration:.2f}s")
     
     try:
-        # 1. Enable and set speed BEFORE sending the rotation command
         motor.enable(True)
         motor.speed(speed_rpm)
         
-        # 2. Trigger the rotation
+        # Start the rotation
         motor.rotate(degrees)
         
-        # 3. Give the I2C bus a tiny moment to update its internal registers
-        time.sleep(0.1)
+        start_time = time.time()
+        # Give it a 20% "safety buffer" over the calculated time
+        timeout = expected_duration * 1.2 
         
-        # WAITING FOR THE MOVEMENT TO FINISH
         while True:
-            left = motor.rotate() # get remaining number of degrees to rotate
-            remaining = abs(left)
+            elapsed = time.time() - start_time
             
-            if remaining < 0.1:
+            # 1. READ HARDWARE: The library's rotate() getter
+            # We wrap this to catch the "unstable interface" issues mentioned in the lib
+            try:
+                left = motor.rotate()
+                remaining = abs(left)
+            except:
+                remaining = degrees # Fallback if I2C fails mid-read
+            
+            # 2. EXIT CONDITION A: Hardware says we are done
+            # We only trust the hardware 'done' signal if at least some time has passed
+            if remaining < 0.5 and elapsed > 0.5:
                 break
-            print(f"Angle remaining: {remaining:.2f}")
-            time.sleep(0.2)
+                
+            # 3. EXIT CONDITION B: Safety Timeout
+            # If the I2C bus is 'unstable' and never reports 0, we stop based on time.
+            if elapsed > timeout:
+                print("Safety timeout reached (Time-based stop).")
+                break
+            
+            print(f"Angle remaining: {remaining:.2f} | Time elapsed: {elapsed:.1f}s")
+            time.sleep(0.3)
             
         print("Movement complete.")
         
     except KeyboardInterrupt:
         print("\nEmergency Stop triggered.")
     finally:
-        motor.enable(False) # always disable protect stepper motors (discharge coils to prevent overheat)
+        motor.enable(False)
 
 if __name__ == "__main__":
-
-    # CHECKING ARGUMENTS GIVEN - sys.argv[1] = degrees, sys.argv[2] = direction
     if len(sys.argv) == 3:
-
         try:
             target_degrees = float(sys.argv[1])
             target_direction = int(sys.argv[2])
-            
-            # basic input validation for direction of rotation
             if target_direction not in [0, 1]:
                 print("Error: Direction must be 1 (CW) or 0 (CCW)")
             else:
                 move_stepper(target_degrees, target_direction)
-                
         except ValueError:
             print("Error: Please enter numbers for degrees and direction.")
     else:
