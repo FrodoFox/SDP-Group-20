@@ -82,6 +82,8 @@ class GolfBallTracker:
                 best_score = 0
 
                 # TESTING CONTOUR AND DETERMINING A CONFIDENCE VALUE
+                
+                # Using new params to improve accuracy, logic is basically identical to before 
                 for cnt in contours:
                     area = cv2.contourArea(cnt)
                     if area < 400:
@@ -91,16 +93,37 @@ class GolfBallTracker:
                     if perimeter == 0:
                         continue
 
-                    # TESTING CONTOUR SHAPE TO FIND HOW CIRCULAR IT IS
-                    circularity = (4 * math.pi * area) / (perimeter ** 2)   
-                    hull = cv2.convexHull(cnt)                              # Converting the contour into a convex hull - Equivalent to stretching a rubber band around the shape detected by pixels
-                    solidity = area / cv2.contourArea(hull)                 # Comparing the area of pixels detected by the camera to the area detected by putting a rubber band around it (filtering shadows and obstructions)
+                    circularity = (4 * math.pi * area) / (perimeter ** 2)
+                    hull = cv2.convexHull(cnt)
+                    hull_area = cv2.contourArea(hull)
+                    hull_perimeter = cv2.arcLength(hull, True)
 
-                    # COMPUTING A CONFIDENCE SCORE
-                    if circularity > 0.6 and solidity > 0.85:
+                    # Sanity check
+                    if hull_area == 0 or hull_perimeter == 0:
+                        continue
+
+                    # Kept, but not used now
+                    solidity = area / hull_area
+
+                    # How "dented" the shape is. Perfectly smooth = 0, increases with more dents/shadows/gaps
+                    defect_ratio = (hull_area - area) / hull_area
+
+                    # How rough the shapes' boundary is. Smooth ball: contour perimeter ≈ hull perimeter,  ratio ≈ 1
+                    # For a jagged shape: contour perimeter > hull perimeter, ratio > 1
+                    perimeter_ratio = perimeter / hull_perimeter
+
+                    # New constraints, might need tweeking 
+                    if circularity > 0.65 and defect_ratio < 0.2 and perimeter_ratio < 1.25:
                         ((px_x, px_y), radius) = cv2.minEnclosingCircle(cnt)
 
-                        score = circularity * solidity * area               
+                        # New score function: round, convex, smooth, size 
+                        score = (
+                            circularity *
+                            (1 - defect_ratio) *
+                            (1 / perimeter_ratio) *
+                            math.sqrt(area)
+                        )
+
                         if score > best_score:
                             best_score = score
                             best_candidate = (cnt, px_x, px_y, radius)
