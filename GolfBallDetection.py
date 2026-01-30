@@ -9,11 +9,11 @@ class GolfBallTracker:
     def __init__(self):
         # CONSTANTS NEEDED FOR SCALING THE BALL AND DISTANCE CALCULATIONS
         self.BALL_DIAM_MM = 42.67        # As googled (42.87mm)
-        self.FOCAL_LENGTH = 1357         # Focal length for the resolution used (1640x1232) in pixels
+        self.FOCAL_LENGTH = 3350         # Focal length for the resolution used (1640x1232) in pixels
 
         # CAMERA CONFIGURATION
         self.picam2 = Picamera2()
-        config = self.picam2.create_video_configuration(main={"format": "YUV420", "size": (1640, 1232)})    # Using YUV420 format because the Y channel is essentially Grayscale/Lightness.
+        config = self.picam2.create_video_configuration(main={"format": "YUV420", "size": (3840, 2160)}, fps = 30)    # Using YUV420 format because the Y channel is essentially Grayscale/Lightness.
         self.picam2.configure(config)
         self.picam2.start()
 
@@ -26,28 +26,26 @@ class GolfBallTracker:
     def camera_stream(self):
         while self.running:
             raw_data = self.picam2.capture_array()
-            gray_frame = raw_data[:1232, :1640]     # In YUV420, the first 'h' rows are the Y (Lightness) channel.
+            gray_frame = raw_data[:2160, :3840]     # In YUV420, the first 'h' rows are the Y (Lightness) channel.
             with self.lock:
                 self.frame = gray_frame
-            time.sleep(0.01)
+            time.sleep(0.001)
 
     def track_patterned_golf_balls(self):
 
         # MATH STUFF I DON'T UNDERSTAND (Contrast Limited Adaptive Histogram Equalization)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)) 
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(12, 12)) 
 
         # STARTING THE BUFFER FOR THE TRACKING
         tracked_ball = None     # (px_x, px_y, radius, r, theta, z)
         missed_frames = 0
-        MAX_MISSED_FRAMES = 6
+        MAX_MISSED_FRAMES = 10
         SMOOTHING = 0.7         # EMA factor (closer to 1 = smoother)
         results = (0, 0, 0)
 
         # STARTING THE THREAD TO CAPTURE FRAMES
         stream_thread = threading.Thread(target=self.camera_stream, daemon=True)
         stream_thread.start()
-
-        print("Press 'q' to stop.")
 
         try:
             while self.running:
@@ -65,11 +63,11 @@ class GolfBallTracker:
                 l_norm = clahe.apply(l_channel)                                                
 
                 # 2. Blurring image slightly and looking for sudden shifts in colour
-                blurred     = cv2.medianBlur(l_norm, 7)                                     # applying median blur to reduce noise and small details (7x7 kernel)
-                edges       = cv2.Canny(blurred, 50, 150)                                   # using Canny edge detection to find sudden changes in colour
+                blurred     = cv2.medianBlur(l_norm, (9, 9), 0)                             # applying median blur to reduce noise and small details (7x7 kernel)
+                edges       = cv2.Canny(blurred, 40, 120)                                   # using Canny edge detection to find sudden changes in colour
 
                 # 3. Moving a kernel over the blended image to identify circles / ellipses
-                kernel      = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+                kernel      = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
                 closed      = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
 
                 # Creates empty black frame to layer edges onto
@@ -84,7 +82,7 @@ class GolfBallTracker:
                 # TESTING CONTOUR AND DETERMINING A CONFIDENCE VALUE
                 for cnt in contours:
                     area = cv2.contourArea(cnt)
-                    if area < 400:
+                    if area < 1200:
                         continue
 
                     perimeter = cv2.arcLength(cnt, True)
@@ -97,7 +95,7 @@ class GolfBallTracker:
                     solidity = area / cv2.contourArea(hull)                 # Comparing the area of pixels detected by the camera to the area detected by putting a rubber band around it (filtering shadows and obstructions)
 
                     # COMPUTING A CONFIDENCE SCORE
-                    if circularity > 0.6 and solidity > 0.85:
+                    if circularity > 0.55 and solidity > 0.8:
                         ((px_x, px_y), radius) = cv2.minEnclosingCircle(cnt)
 
                         score = circularity * solidity * area               
@@ -145,7 +143,7 @@ class GolfBallTracker:
                 display_frame = cv2.cvtColor(l_norm, cv2.COLOR_GRAY2BGR)    # (Converting L back to BGR only for the display window)
                 if tracked_ball is not None:
                     px_x, px_y, radius, r, theta, z = tracked_ball
-                    results = (r, theta, z)
+                    results = (px_x, px_y, z)
 
                     cv2.circle(display_frame, (int(px_x), int(px_y)), int(radius), (0, 255, 0), 2)
                     cv2.putText(display_frame, f"Dist: {int(z)}mm", (int(px_x), int(px_y) - 10),
