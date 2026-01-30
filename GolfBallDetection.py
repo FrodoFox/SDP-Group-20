@@ -13,7 +13,8 @@ class GolfBallTracker:
 
         # CAMERA CONFIGURATION
         self.picam2 = Picamera2()
-        config = self.picam2.create_video_configuration(main={"format": "YUV420", "size": (3840, 2160)}, fps = 30)    # Using YUV420 format because the Y channel is essentially Grayscale/Lightness.
+        config = self.picam2.create_video_configuration(main={"format": "YUV420", "size": (3840, 2160)})    # Using YUV420 format because the Y channel is essentially Grayscale/Lightness.
+        config.controls.FrameRate = 30
         self.picam2.configure(config)
         self.picam2.start()
 
