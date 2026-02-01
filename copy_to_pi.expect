@@ -1,0 +1,45 @@
+#!/usr/bin/expect -f
+
+# --- CONFIG ---
+set timeout 300
+set user "freddy"
+set host "10.124.55.33"
+set password "2103"
+set target_dir "/home/freddy/SDP-Group-20"
+
+# 1. --- TRANSFER PHASE ---
+puts "\n>>> Phase 1: Creating directory on $host..."
+spawn ssh $user@$host "mkdir -p $target_dir"
+expect {
+    "Are you sure you want to continue connecting" {
+        send "yes\r"
+        exp_continue
+    }
+    "password:" {
+        send "$password\r"
+    }
+}
+expect eof
+
+puts "\n>>> Phase 2: Syncing files via rsync..."
+# Use rsync to sync files (excluding git metadata to prevent corruption)
+spawn rsync -avz --exclude=.git/ --exclude=.gitignore --exclude=*.expect ./ $user@$host:$target_dir
+expect {
+    "Are you sure you want to continue connecting" {
+        send "yes\r"
+        exp_continue
+    }
+    "password:" {
+        send "$password\r"
+    }
+}
+expect eof
+
+spawn ssh -XC $user@$host
+expect {
+    "password:" {
+        send "$password\r"
+    }
+}
+
+interact

@@ -1,5 +1,4 @@
 # Ignoring ssh script as it contains tokens
-copy_to_pi.expect
 freddy.expect
 
 # OS Junk
