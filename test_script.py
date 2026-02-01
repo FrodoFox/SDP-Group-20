@@ -27,7 +27,7 @@ def main():
                 x, y, z = location
                 output = f"Ball Found | X: {x:>7.2f}mm | Y: {y:>7.2f}mm | Z: {z:>7.2f}mm"
             else:
-                output = "Searching...                                         "
+                output = "Searching...                                                  "   # A lot of whitespace to fully clear prior text
             
             # Use sys.stdout to bypass print's default buffering
             sys.stdout.write('\r' + output)
@@ -36,11 +36,8 @@ def main():
             # Polling every 0.5s to not flood the terminal
             time.sleep(0.5)
 
-    # Manual interupt for stopping the program
-    except KeyboardInterrupt:
-        print("\n\nManual stop detected.")
     finally:
-        print("Cleaning up camera and windows...")
+        print("\nCleaning up camera and windows...")
         tracker.stop()
         sys.exit(0)
 
