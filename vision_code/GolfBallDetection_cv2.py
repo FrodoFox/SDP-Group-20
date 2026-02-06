@@ -1,9 +1,10 @@
 import sys
 import os
 
-script_dir  = os.path.dirname(os.path.abspath(__file__))
-deps_path   = os.path.join(script_dir, "..", "..", "dependencies")
-sys.path.insert(0, os.path.abspath(deps_path))
+# --- PATHING FOR DEPENDENCIES ON TURTLEBOT ---
+#script_dir  = os.path.dirname(os.path.abspath(__file__))
+#deps_path   = os.path.join(script_dir, "..", "..", "dependencies")
+#sys.path.insert(0, os.path.abspath(deps_path))
 
 import cv2
 import numpy as np

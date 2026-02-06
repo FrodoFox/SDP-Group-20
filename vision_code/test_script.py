@@ -1,8 +1,6 @@
 import time
 import sys
-import socket
-import json
-from GolfBallDetection import GolfBallTracker
+from vision_code.GolfBallDetection_picam2 import GolfBallTracker
 
 def main():
 

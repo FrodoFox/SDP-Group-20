@@ -1,0 +1,90 @@
+#!/bin/bash
+
+# --- CONFIGURATION ---
+USER="ubuntu"
+HOST="weepinbell"
+PASS="turtlebot"
+PACKAGES="picamera2"
+PY_VERSION="3.12"
+DEST_PATH="/home/ubuntu/SDP-Group-20/dependencies"
+
+echo "🚀 Starting local preparation..."
+
+# --- LOCAL DOWNLOAD DIRECTORY SETUP ---
+mkdir -p ./tmp_folder
+cd ./tmp_folder
+
+# --- DOWNLOAD AND UNZIP ---
+echo "📥 Downloading $PACKAGES and dependencies..."
+
+# Strict hardware method - specifies for arm processor
+#python3 -m pip download \
+#    --no-cache-dir \
+#    --only-binary=:all: \
+#    --platform manylinux2014_aarch64 \
+#    --python-version $PY_VERSION \
+#    --implementation cp \
+#    --abi cp312 \
+#    $PACKAGES
+
+# For installing pure python modules where architecture doesn't matter
+python3 -m pip download \
+    --no-cache-dir \
+    --platform any \
+    --python-version $PY_VERSION \
+    --no-deps \
+    $PACKAGES
+
+sleep 2
+sync
+
+# Verifying files were downloaded
+if [ -z "$(ls -A ./*.whl 2>/dev/null)" ]; then
+    echo "❌ ERROR: No .whl files found. Pip failed to download the package."
+    exit 1
+fi
+
+# Unzipping downloaded files
+for whl in *.whl; do
+    echo "🔓 Unzipping: $whl..."
+    if unzip -q -o "$whl"; then
+        echo "✅ Successfully extracted $whl"
+        rm "$whl"
+    else
+        echo "❌ ERROR: Could not unzip $whl. The file might be corrupted or incomplete."
+        exit 1
+    fi
+done
+
+sync
+
+echo "🔐 Starting automated transfer to $HOST..."
+
+# --- COPYING THE FILES OVER AN SSH ---
+expect << EOF
+    set timeout 300
+
+    proc do_auth {pass} {
+        expect {
+            "*password:*" { send "\$pass\r"; exp_continue }
+            "yes/no"      { send "yes\r"; exp_continue }
+            eof
+        }
+    }
+
+    spawn ssh ${USER}@${HOST} "mkdir -p $DEST_PATH"
+    do_auth "$PASS"
+
+    spawn scp -rp . ${USER}@${HOST}:${DEST_PATH}/
+    do_auth "$PASS"
+
+    spawn ssh ${USER}@${HOST} "ls -d $DEST_PATH/cv2"
+    do_auth "$PASS"
+EOF
+
+# --- FINAL CLEANUP ---
+echo "🧹 Cleaning up local temporary files..."
+cd ..
+rm -rf ./tmp_folder
+
+echo "✅ Deployment process finished."
