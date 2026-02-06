@@ -31,10 +31,6 @@ class GolfBallTracker:
         especially for larger resolutions that would greatly increase the load on the CPU
         """
         self.picam2 = Picamera2()
-        # Stop if close enough
-        if z < self.STOP_DISTANCE_MM:
-            self.get_logger().info('Reached ball')
-            self.cmd_pub.publish(twist)
         config = self.picam2.create_video_configuration(main={"format": "YUV420", "size": (self.WIDTH, self.HEIGHT)})
         self.picam2.configure(config)
         self.picam2.start()
