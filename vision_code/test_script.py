@@ -1,12 +1,11 @@
 import time
 import sys
-from vision_code.GolfBallDetection_picam2 import GolfBallTracker
+from vision_code.GolfBallDetection_cv2 import GolfBallTracker
 
 def main():
 
     # Start the golf ball tracker
     tracker = GolfBallTracker(show_window=True)
-    print("Initializing Camera and Threads...")
     tracker.start()
     
     time.sleep(1)
