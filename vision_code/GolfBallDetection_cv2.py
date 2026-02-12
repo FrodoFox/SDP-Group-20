@@ -5,7 +5,7 @@ import numpy as np
 import math
 import threading
 import time
-import json  # Added for calibration logic
+import json
 from collections import deque
 from ultralytics import YOLO
 
