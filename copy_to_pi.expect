@@ -2,10 +2,10 @@
 
 # --- CONFIG ---
 set timeout 300
-set user "freddy"
-set host "10.124.55.33"
-set password "2103"
-set target_dir "/home/freddy/SDP-Group-20"
+set user "ubuntu"
+set host "fe80::2ecf:67ff:fe0c:f9e5%eth0"
+set password "turtlebot"
+set target_dir "/home/ubuntu/SDP-Group-20"
 
 # 1. --- TRANSFER PHASE ---
 puts "\n>>> Phase 1: Creating directory on $host..."
@@ -23,7 +23,7 @@ expect eof
 
 puts "\n>>> Phase 2: Syncing files via rsync..."
 # Use rsync to sync files (excluding git metadata to prevent corruption)
-spawn rsync -avz --exclude=.git/ --exclude=.gitignore --exclude=*.expect ./ $user@$host:$target_dir
+spawn rsync -avz -e "ssh -6" --exclude=.git/ --exclude=.gitignore --exclude=*.expect ./ "$user@\[$host\]:$target_dir"
 expect {
     "Are you sure you want to continue connecting" {
         send "yes\r"
